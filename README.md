@@ -16,12 +16,14 @@ Out of the box Puppeteer and Playwright come with some significant leaks that ar
 ## Is there an easy drop-in replacement?
 If you don't want to mess with the patches and all possible errors, there is a drop-in solution for you. These packages have simply applied rebrowser-patches on top of the original code, nothing more.
 
-Puppeteer: [rebrowser-puppeteer](https://www.npmjs.com/package/rebrowser-puppeteer) and [rebrowser-puppeteer-core](https://www.npmjs.com/package/rebrowser-puppeteer-core)
+Puppeteer: [rebrowser-puppeteer](https://www.npmjs.com/package/rebrowser-puppeteer) ([src](https://github.com/rebrowser/rebrowser-puppeteer)) and [rebrowser-puppeteer-core](https://www.npmjs.com/package/rebrowser-puppeteer-core) ([src](https://github.com/rebrowser/rebrowser-puppeteer-core))
 
-Playwright: [rebrowser-playwright](https://www.npmjs.com/package/rebrowser-playwright) and [rebrowser-playwright-core](https://www.npmjs.com/package/rebrowser-playwright-core)
+Playwright (Node.js): [rebrowser-playwright](https://www.npmjs.com/package/rebrowser-playwright) ([src](https://github.com/rebrowser/rebrowser-playwright)) and [rebrowser-playwright-core](https://www.npmjs.com/package/rebrowser-playwright-core) ([src](https://github.com/rebrowser/rebrowser-playwright-core))
+
+Playwright (Python): [rebrowser-playwright](https://pypi.org/project/rebrowser-playwright/) ([src](https://github.com/rebrowser/rebrowser-playwright-python))
 
 The easiest way to start using it is to fix your `package.json` to use new packages but keep the old name as an alias. This way, you don't need to change any source code of your automation. Here is how to do that:
-1. Open `package.json` and replace `"puppeteer": "^23.3.1"` and `"puppeteer-core": "^23.3.1"` with `"puppeteer": "npm:rebrowser-puppeteer@^23.3.1"` and `"puppeteer-core": "npm:rebrowser-puppeteer-core@^23.3.1"`.
+1. Open `package.json` and replace `"puppeteer": "^23.3.1"` and `"puppeteer-core": "^23.3.1"` with `"puppeteer": "npm:rebrowser-puppeteer@^23.3.1"` and `"puppeteer-core": "npm:rebrowser-puppeteer-core@^23.3.1"`. Note: 23.3.1 is just an example, check the latest version on [npm](https://www.npmjs.com/package/rebrowser-puppeteer-core).
 2. Run `npm install` (or `yarn install`)
 
 Another way is to actually use new packages instead of the original one. Here are the steps you need to follow:
@@ -44,27 +46,33 @@ However, there's a technique that detects the usage of this command, revealing t
 For more details on this technique, read DataDome's blog post: [How New Headless Chrome & the CDP Signal Are Impacting Bot Detection](https://datadome.co/threat-research/how-new-headless-chrome-the-cdp-signal-are-impacting-bot-detection/).
 In brief, it's a few lines of JavaScript on the page that are automatically called if `Runtime.Enable` was used.
 
-Our fix disables the automatic `Runtime.Enable` command on every frame. Instead, we manually create contexts with unknown IDs when a frame is created. Then, when code needs to be executed, we have implemented two approaches to get the context ID. You can choose which one to use.
+Our fix disables the automatic `Runtime.Enable` command on every frame. Instead, we manually create contexts with unknown IDs when a frame is created. Then, when code needs to be executed, there are multiple ways to get the context ID.
 
-#### 1. Create a new isolated context via `Page.createIsolatedWorld` and save its ID from the CDP response.
+#### 1. Create a new binding in the main world, call it and save its context ID.
+🟢 Pros: The ultimate approach that keeps access to the main world and works with web workers and iframes. You don't need to change any of your existing codebase.
+
+🔴 Cons: None are discovered so far.
+
+#### 2. Create a new isolated context via `Page.createIsolatedWorld` and save its ID.
 🟢 Pros: All your code will be executed in a separate isolated world, preventing page scripts from detecting your changes via MutationObserver and other techniques.
 
 🔴 Cons: You won't be able to access main context variables and code. While this is necessary for some use cases, the isolated context generally works fine for most scenarios. Also, web workers don't allow creating new worlds, so you can't execute your code inside a worker. This is a niche use case but may matter in some situations. There is a workaround for this issue, please read [How to Access Main Context Objects from Isolated Context in Puppeteer & Playwright](https://rebrowser.net/blog/how-to-access-main-context-objects-from-isolated-context-in-puppeteer-and-playwright-23741).
 
-#### 2. Call `Runtime.Enable` and then immediately call `Runtime.Disable`. 
+#### 3. Call `Runtime.Enable` and then immediately call `Runtime.Disable`. 
 This triggers `Runtime.executionContextCreated` events, allowing us to catch the proper context ID.
 
 🟢 Pros: You will have full access to the main context.
 
 🔴 Cons: There's a slight chance that during this short timeframe, the page will call code that leads to the leak. The risk is low, as detection code is usually called during specific actions like CAPTCHA pages or login/registration forms, typically right after the page loads. Your business logic is usually called a bit later.
 
-> 🎉 Our tests show that both approaches are currently undetectable by Cloudflare or DataDome.
+> 🎉 Our tests show that all these approaches are currently undetectable by Cloudflare or DataDome.
 
 Note: you can change settings for this patch on the fly using an environment variable. This allows you to easily switch between patched and non-patched versions based on your business logic.
 
-- `REBROWSER_PATCHES_RUNTIME_FIX_MODE=alwaysIsolated` &mdash; always run all scripts in isolated context (default)
+- `REBROWSER_PATCHES_RUNTIME_FIX_MODE=addBinding` &mdash; addBinding technique (default)
+- `REBROWSER_PATCHES_RUNTIME_FIX_MODE=alwaysIsolated` &mdash; always run all scripts in isolated context
 - `REBROWSER_PATCHES_RUNTIME_FIX_MODE=enableDisable` &mdash; use Enable/Disable technique
-- `REBROWSER_PATCHES_RUNTIME_FIX_MODE=0` &mdash; completely disable this patch
+- `REBROWSER_PATCHES_RUNTIME_FIX_MODE=0` &mdash; completely disable fix for this leak
 - `REBROWSER_PATCHES_DEBUG=1` &mdash; enable some debugging messages
 
 Remember, you can set these variables in different ways, for example, in code:
@@ -111,16 +119,16 @@ This env variable cannot be changed on the fly, you have to set it before runnin
 *Note: it's not detectable by external website scripts, but Google might use this information in their proprietary Chrome; we never know.*
 
 ## Usage
-This package is designed to be run against an installed library. Install the Puppeteer library, then call the patcher, and it's ready to go.
+This package is designed to be run against an installed library. Install the library, then call the patcher, and it's ready to go.
 
 In the root folder of your project, run:
 ```
-npx rebrowser-patches@latest patch
+npx rebrowser-patches@latest patch --packageName puppeteer-core
 ```
 
 You can easily revert all changes with this command:
 ```
-npx rebrowser-patches@latest unpatch
+npx rebrowser-patches@latest unpatch --packageName puppeteer-core
 ```
 
 You can also patch a package by providing the full path to its folder, for example:
@@ -136,29 +144,35 @@ You can see all command-line options by running `npx rebrowser-patches@latest --
 ## How to update the patches?
 If you already have your package patched and want to update to the latest version of rebrowser-patches, the easiest way would be to delete `node_modules/puppeteer-core`, then run `npm install` or `yarn install --check-files`, and then run `npx rebrowser-patches@latest patch`.
 
-## Puppeteer support
+## How to patch Java/Python/.NET versions of Playwright?
+All these versions are just wrappers around Node.js version of Playwright. You need to find `driver` folder inside your Playwright package and run this patch with `--packagePath=$yourDriverFolder/$yourPlatform/package`.
 
-| Pptr Ver                             | Release Date | Chrome Ver | Patch Support |
-|--------------------------------------|--------------|------------|---------------|
-| 23.3.x                               | 2024-09-04   | 128        | ✅             |
-| 23.2.x                               | 2024-08-29   | 128        | ✅             |
-| 23.1.x                               | 2024-08-14   | 127        | ✅             |
-| 23.0.x                               | 2024-08-07   | 127        | ✅             |
-| 22.15.x                              | 2024-07-31   | 127        | ✅             |
-| 22.14.x                              | 2024-07-25   | 127        | ✅             |
-| 22.13.x                              | 2024-07-11   | 126        | ✅             |
-| 22.12.x<br/><small>and below</small> | 2024-06-21   | 126        | ❌             |
+## Puppeteer support
+✅ Latest fully tested version: 23.10.1 (released 2024-12-04)
 
 ## Playwright support
-Playwright patches support `Runtime.enable` leak (only alwaysIsolated mode) and ability to change utility world name via `REBROWSER_PATCHES_UTILITY_WORLD_NAME` env variable.
+Playwright patches include:
+- `Runtime.enable` leak: `addBinding` and `alwaysIsolated`modes.
+- Ability to change utility world name via `REBROWSER_PATCHES_UTILITY_WORLD_NAME` env variable.
+- More patches are coming, star and follow the repo.
 
-Only JS version of Playwright is supported. Python is coming soon.
+Important: `page.pause()` method doesn't work with the enabled fix, it needs more investigation. You can just disable the fix completely while debugging using `REBROWSER_PATCHES_RUNTIME_FIX_MODE=0` env variable.
 
-| Playwright Ver                      | Release Date | Chrome Ver | Patch Support |
-|-------------------------------------|--------------|------------|---------------|
-| 1.47.2                              | 2024-09-20   | 129        | ✅             |
-| 1.47.1<br/><small>and below</small> | 2024-09-13   | 129        | ❌             |
+These patches work only for Chrome for now. If you really want to use it with WebKit or Firefox, please open a new issue.
 
+✅ Latest fully tested version: 1.49.1 (released 2024-12-10)
+
+## How to use `rebrowser-puppeteer` with `puppeteer-extra`?
+Use `addExtra` method, here is the example:
+```
+// before
+import puppeteer from 'puppeteer-extra'
+
+// after
+import { addExtra } from 'puppeteer-extra'
+import rebrowserPuppeteer from 'rebrowser-puppeteer-core'
+const puppeteer = addExtra(rebrowserPuppeteer)
+```
 
 ## Follow the project
 We're currently developing more patches to improve web automation transparency, which will be released in this repo soon. Please support the project by clicking ⭐️ star or watch button.
@@ -173,7 +187,7 @@ Always keep in mind: the less you manipulate browser internals via JS injections
 If you've tried everything and still face issues, try asking a question in the issues section or consider using cloud solutions from Rebrowser.
 
 ## What is Rebrowser?
-This package is sponsored and maintained by [Rebrowser](https://rebrowser.net). We allow you to scale your automation in the cloud with hundreds of unique fingerprints.
+This package is sponsored and maintained by [Rebrowser](https://rebrowser.net). We allow you to scale your browser automation and web scraping in the cloud with hundreds of unique fingerprints.
 
 Our cloud browsers have great success rates and come with nice features such as notifications if your library uses `Runtime.Enable` during execution or has other red flags that could be improved. [Create an account](https://rebrowser.net) today to get invited to test our bleeding-edge platform and take your automation business to the next level.
 
@@ -193,6 +207,8 @@ patch -v
 
 ### Special thanks
 [zfcsoftware/puppeteer-real-browser](https://github.com/zfcsoftware/puppeteer-real-browser) - general ideas and contribution to the automation community
+
+[Kaliiiiiiiiii-Vinyzu/patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) - set of patches to fix Playwright leaks
 
 [kaliiiiiiiiii/brotector](https://github.com/kaliiiiiiiiii/brotector) - some modern tests, algorithm to distinguish CDP vs devtools
 
